@@ -1,0 +1,22 @@
+initial At(a), Level(low), BoxAt(c), BananasAt(b)
+goal Have(bananas)
+
+action Move(x,y) 
+  from At(x), Level(low)
+  to   not At(x), At(y)
+
+action ClimbUp(l)
+  from At(l), BoxAt(l)
+  to   Level(high), not Level(low)
+
+action ClimbDown(l)
+  from At(l), BoxAt(l)
+  to   Level(low), not Level(high)
+
+action MoveBox(x,y)
+  from At(x), BoxAt(x), Level(low)
+  to   BoxAt(y), not BoxAt(x), At(y), not At(x)
+
+action TakeBananas(l)
+  from At(l), BananasAt(l)
+  to   Have(bananas)
