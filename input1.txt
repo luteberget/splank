@@ -1,22 +1,26 @@
+domain Loc a,b,c
+domain Level low,high
+pred At(Loc), Level(Level), BoxAt(Loc), BananasAt(Loc), HaveBananas
+
 initial At(a), Level(low), BoxAt(c), BananasAt(b)
-goal Have(bananas)
+goal HaveBananas
 
-action Move(x,y) 
-  from At(x), Level(low)
-  to   not At(x), At(y)
+action Move(X,Y) 
+  from At(X), Level(low)
+  to   not At(X), At(Y)
 
-action ClimbUp(l)
-  from At(l), BoxAt(l)
+action ClimbUp(L)
+  from At(L), BoxAt(L), Level(low)
   to   Level(high), not Level(low)
 
-action ClimbDown(l)
-  from At(l), BoxAt(l)
+action ClimbDown(L)
+  from At(L), BoxAt(L), Level(high)
   to   Level(low), not Level(high)
 
-action MoveBox(x,y)
-  from At(x), BoxAt(x), Level(low)
-  to   BoxAt(y), not BoxAt(x), At(y), not At(x)
+action MoveBox(X,Y)
+  from At(X), BoxAt(X), Level(low)
+  to   BoxAt(Y), not BoxAt(X), At(Y), not At(X)
 
-action TakeBananas(l)
-  from At(l), BananasAt(l)
+action TakeBananas(L)
+  from At(L), BananasAt(L)
   to   Have(bananas)

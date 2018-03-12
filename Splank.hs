@@ -5,9 +5,10 @@ import qualified Data.Set as Set
 import Data.Map (Map)
 import qualified Data.Map as Map
 import Data.Maybe (fromMaybe)
-import Control.Monad (forM, forM_, filterM)
+import Data.List ((\\), nub)
+import Control.Monad (forM, forM_, filterM, join)
 
-import SAT hiding (solve)
+import SAT hiding (solve, bool)
 import qualified SAT
 import SAT.Bool
 
@@ -20,22 +21,21 @@ type Plan = [PlanItem]
 
 data Problem 
   = Problem 
-  { initialState :: Set (Prop Const)
-  , goal :: [Prop Const]
+  { initialState :: Set ((Bool, Prop Const))
+  , goal :: [(Bool, Prop Const)]
   , actions :: [Action]
   } deriving (Show, Ord, Eq)
 
 data Action
   = Action
   { actionName :: String
-  , preCond    :: [Prop Term]
-  , postCond   :: [Prop Term]
+  , preConds   :: [(Bool, Prop Term)]
+  , postConds  :: [(Bool, Prop Term)]
   }  deriving (Show, Ord, Eq)
 
 data Prop a
   = Prop
-  { polarity  :: Bool
-  , predicate :: PredName
+  { predicate :: PredName
   , arguments :: [a]
   } deriving (Show, Ord, Eq)
 
@@ -44,16 +44,80 @@ data Term
   | VarTerm Var
   deriving (Show, Ord, Eq)
 
+vars :: Prop Term -> [Var]
+vars (Prop _ args) = nub (join (fmap argVars args))
+  where
+    argVars (VarTerm v) = [v]
+    argVars (ConstTerm _) = []
+
 data Settings
   = Settings
   { settingsMaxSteps :: Maybe Int
   } deriving (Show)
 
-type GroundInstance = (Set (Prop Const), Set PredName)
-type GrounderState = (GroundInstance, GroundInstance)
+data AbstractBool = ATrue | AFalse | ABoth Lit
 
-ground :: Problem -> Set (Prop Const)
-ground = undefined
+type PropSet = Set (Prop Const)
+type AbstractProps = Map (Prop Const) AbstractBool
+
+abool :: Bool -> AbstractBool
+abool True = ATrue
+abool False = AFalse
+
+addA :: Solver -> AbstractBool -> AbstractBool -> IO AbstractBool
+addA s a b
+  | a /= b = ABoth =<< newLit s
+  | otherwise = return a
+
+--type Table = (Prop Term,[Prop Const])
+
+data FactStatus = Known | Possible Lit
+
+hasSign :: AbstractBool -> Bool -> (Bool, FactStatus)
+hasSign ATrue True = (True, Known)
+hasSign ATrue False = (False, Known)
+hasSign AFalse True = (False, Known)
+hasSign AFalse False = (True, Known)
+hasSign (ABoth v) True = (True, Possible v)
+hasSign (ABoth v) False = (True, Possible (neg v))
+
+propagate :: AbstractProps -> [Action] -> (AbstractProps, Set PlanItem)
+propagate ps as = Set.unions [ undefined ] -- step a | a <- as ]
+  where
+    freeTerms :: [Prop Term]
+    freeTerms = nub (join [ unbound a | a <- as ])
+
+    -- look at preconditions and find possible ground actions
+    groundActions :: Action -> [PlanItem]
+    groundActions a = [ (n, v) 
+      where
+        varValues = foldl1 Set.intersection (fmap (varValues vs) (preConds a))
+
+    varValues :: [Var] -> (Bool, Prop Term) -> Set [Const]
+    varValues vs (sign,prop@(Proposition name args)) 
+
+    match :: [Term] -> [Const] -> Bool
+    match ts cs
+     | len ts /= len cs = False
+     | otherwise = all m (zip ts cs)
+    where
+      m :: Term -> Const -> Bool
+      m (VarTerm _) _ = True
+      m (ConstTerm c1) c2 = c1 == c2
+
+    -- groundPreCond :: Set (Prop Term) -> 
+
+    --step :: Action -> PropSet
+    --step a = satisfiable (preConds a)
+
+-- Find postcond variables which are unbound by preconds
+unbound :: Action -> [Prop Term]
+unbound a = filter (containsUnboundVar) (fmap snd (postConds a))
+  where
+    containsUnboundVar :: Prop Term -> Bool
+    containsUnboundVar term = not (null ((vars term) \\ (boundVars)))
+    boundVars :: [Var]
+    boundVars = nub (join [vars t | t <- fmap snd (preConds a) ])
 
 parseStdin :: IO Problem
 parseStdin = undefined
@@ -61,25 +125,31 @@ parseStdin = undefined
 type State      = Map (Prop Const) Lit
 type Transition = Map PlanItem Lit
 
-reprBool :: Bool -> Lit
-reprBool True = true
-reprBool False = false
+-- Determine the following from looking at actions:
+--  a) possible assignments to free variables
+--  b) possible grounded actions
+newState :: Solver -> Problem -> State -> AbstractProps -> IO (State, Transition, AbstractProps)
+newState s problem state propSet = do
+  -- let newPropSet = propagate propSet (actions problem)
+  --x <- newIORef :: Map (Prop Const) (Set PlanItem)
+  -- transition <- forM (actions problem) $ \action -> do
+  --   let params = undefined -- allPaarms
+  --   forM params $ \p -> do
+  --     undefined
+  undefined
 
-newState :: Solver -> Problem -> State -> Set (Prop Const) -> IO (State, Transition)
-newState s problem state props = do
-  x <- newIORef :: Map (Prop Const) (Set PlanItem)
-  transition <- forM (actions problem) $ \a -> do
-    let params = allPaarms
-    forM params $ \p -> do
+stVal :: Prop Const -> Map (Prop Const) Lit -> Lit
+stVal = Map.findWithDefault false
+
+signed :: Bool -> Lit -> Lit
+signed True = id
+signed False = neg
 
 solve :: Problem -> Settings -> IO (Maybe Plan)
 solve problem settings = withNewSolver $ \s -> do
   let maxSteps = fromMaybe 100 (settingsMaxSteps settings)
-  let propositions = ground problem
-  let trySolve state transitions n = do
-        x <- SAT.solve s [ f l | p <- goal problem 
-                               , let f = if polarity p then id else neg
-                               , let l = state Map.! p]
+  let trySolve state transitions propSet n = do
+        x <- SAT.solve s [ signed s (state Map.! p) | (s,p) <- goal problem ]
         if x then do
           putStrLn "SUCCESS."
           plan <- forM transitions $ \m -> do
@@ -88,16 +158,15 @@ solve problem settings = withNewSolver $ \s -> do
           return (Just plan)
         else if n < maxSteps then do
           putStrLn $ "STEP" ++ (show (n+1)) ++ "."
-          (nextState, nextTransition) <- newState s problem state propositions
-          trySolve nextState (transitions ++ [nextTransition]) (n+1)
+          (nextState, nextTransition, nextPropSet) <- newState s problem state propSet
+          trySolve nextState (transitions ++ [nextTransition]) nextPropSet (n+1)
         else do
           putStrLn $ "FAILED after " ++ (show n) ++ " steps."
           return Nothing
 
-  let stateI = Map.fromList [(x,v) | x <- Set.toList propositions
-       , let v = reprBool (Set.member x (initialState problem))]
-
-  trySolve stateI [] 0
+  let mkMap bool = Map.fromList [ (prop, bool sign) 
+                                | (sign,prop) <- Set.toList (initialState problem) ]
+  trySolve (mkMap SAT.bool) [] (mkMap abool) 0
 
 main = do
   putStrLn "hello"
