@@ -13,9 +13,7 @@ import Data.Maybe (fromMaybe)
 
 import Problem
 
-
 type Parser = Parsec Void String
-
 
 sc :: Parser ()
 sc = L.space space1 lineCmnt blockCmnt
