@@ -4,11 +4,13 @@ import Problem
 import Parser
 import SAT
 import SAT.Bool
+import SAT.Equal
 import Data.Map (Map)
 import qualified Data.Map as Map
-import Control.Monad (join, foldM, forM, filterM)
-import Data.Maybe (catMaybes)
-import Debug.Trace
+import Data.Set (Set)
+import qualified Data.Set as Set
+import Control.Monad (join, foldM, forM, filterM, forM_)
+import Data.Maybe (catMaybes, isJust, fromJust)
 
 exactlyOne :: Solver -> [Lit] -> IO ()
 exactlyOne s xs = do
@@ -21,7 +23,7 @@ data GroundAction
   = GroundAction
   { gaPredicate :: GroundPred
   , gaPreCond :: [Lit]
-  , gaPostCond :: [(GroundPred, Bool)]
+  , gaPostCond :: Map GroundPred Bool
   } deriving (Eq, Ord, Show)
 
 -- TODO domains as :: Map
@@ -49,11 +51,6 @@ getDomain problem d = [ v | dom <- domains problem
                           , domainName dom == d
                           , v <- domainValues dom]
 
--- getPredicateDomains :: Problem -> String -> [[String]]
--- getPredicateDomains problem n = [ [ getDomain d | d <- predicateArgsDomains pred ] 
---                                 | pred <- predicates problem
---                                 , n == predicateName pred ]
-
 cart :: [[a]] -> [[a]]
 cart [] = [[]]
 cart (x:xs) = [ e:rest | e <- x, rest <- cart xs ]
@@ -67,6 +64,13 @@ single (x:xs) = allEq x xs
   where
     allEq e [] = e
     allEq e (x:xs) = if e == x then allEq e xs else (error "Single failed")
+
+maybeSingle :: (Eq a) => [a] -> Maybe a
+maybeSingle [] = Nothing
+maybeSingle (x:xs) = allEq x xs
+  where
+    allEq e [] = Just e
+    allEq e (x:xs) = if e == x then allEq e xs else Nothing
 
 groundActions :: Problem -> State -> [GroundAction]
 groundActions problem state = join $ fmap tryAction (actions problem)
@@ -104,7 +108,7 @@ groundActions problem state = join $ fmap tryAction (actions problem)
           from <- mapM inState (fmap (applyT m) (actionFrom a))
           to <- foldM consistent Map.empty (fmap (applyT m) (actionTo a))
           return $ GroundAction (actionName a, applyL m (actionVars a)) 
-                     from (Map.toList to)
+                     from to
 
         consistent :: Map GroundPred Bool -> (GroundPred, Bool) 
                    -> Maybe (Map GroundPred Bool)
@@ -125,13 +129,14 @@ nextState s problem state = do
     [] -> return Nothing
     [action] -> do
                  sequence_ [ addClause s [cond] | cond <- gaPreCond action ]
-                 let newState = foldl i state (gaPostCond action)
+                 let newState = foldl i state (Map.toList (gaPostCond action))
                        where
                          i state (p,b) = Map.insert p (bool b) state
                  return $ Just (Map.fromList [(gaPredicate action, true)], newState)
     actions -> do
-      putStrLn " *> Creating step with the following actions:"
-      sequence_ [ putStrLn $ "   *> " ++ (show a) | a <- actions ]
+      --putStrLn " *> Creating step with the following actions:"
+      -- sequence_ [ putStrLn $ "   *> " ++ (show a) | a <- actions ]
+      --
       -- Create literals for actions
       actionList <- sequence [ newLit s | _ <- actions ]
       let actionMap = Map.fromList (zip (fmap gaPredicate actions) actionList)
@@ -142,35 +147,23 @@ nextState s problem state = do
       -- Action constraint
       exactlyOne s actionList
       -- New state and postconditon constraints
-      --
-      --
-      let newStates :: Map GroundPred ([(GroundPred, Bool)], Maybe Bool)
-          newStates = Map.fromListWith insert
-                        [ (p,([(p,b)],Just b)) | a <- actions, (p,b) <- gaPostCond a ]
-            where 
-              insert :: ([(GroundPred,Bool)], Maybe Bool) 
-                     -> ([(GroundPred,Bool)], Maybe Bool)
-                     -> ([(GroundPred,Bool)], Maybe Bool)
-              insert (xs,(Just x)) (ys,(Just y)) = if x == y then ((xs++ys),Just x) else ((xs++ys),Nothing)
-              insert (xs,_) (ys,_) = ((xs++ys),Nothing)
+      let affectedPreds = Map.fromListWith (++) [ (p,[(gaPredicate a, b)]) | a <- actions, (p, b) <- Map.toList (gaPostCond a) ] 
 
-      let insertx :: Map GroundPred Lit 
-                      -> (GroundPred, ([(GroundPred, Bool)], Maybe Bool)) 
-                      -> IO (Map GroundPred Lit)
-          insertx state (p, (_,Just x)) = return (Map.insert p (bool x) state)
-          insertx state (p, (conds, Nothing)) = do
-              lit <- newLit s
-              forM conds $ \(pred,cond) -> do 
-                addClause s [neg (actionMap Map.! pred), 
-                             if cond then lit else (neg lit)]
-              return (Map.insert p lit state)
-      newState <- foldM insertx state (Map.toList newStates)
+      stateUpdates <- forM (Map.toList affectedPreds) $ \(p,actionValues) -> do
+        let singleValue = maybeSingle (fmap snd actionValues)
+        if length actionValues == length actions && isJust singleValue then do
+          return (p, bool $ fromJust singleValue)
+        else do
+          lit <- newLit s
+          forM_ actionValues $ \(pred, val) -> do
+            addClause s [neg (actionMap Map.! pred), if val then lit else neg lit]
+          if length actionValues < length actions then do
+            equalOr s (fmap (\x -> actionMap Map.! (fst x)) actionValues)
+              (state Map.! p) lit
+          else return ()
+          return (p, lit)
+      let newState = Map.union (Map.fromList stateUpdates) state
       return $ Just (actionMap, newState)
---       
--- 
--- condition :: [Pred] -> State -> [Lit]
--- condition = map (lookup state) statePred
--- 
 
 condition :: State -> Prop String -> Lit
 condition state prop = if polarity prop then x else neg x
@@ -199,26 +192,13 @@ plan maxN problem = withNewSolver $ \s -> do
         return (Just result)
       else do
         if n < maxN then do 
-          -- add new state
           putStrLn "*** Adding state"
           next <- nextState s problem state
           case next of
-            Nothing -> do -- fail
-                       putStrLn "*** No further actions possible"
-                       return Nothing
-            Just (actions, state) -> solve s (n+1) state (plan ++ [actions])
+            Nothing -> do putStrLn "*** No further actions possible"
+                          return Nothing
+            Just (actions, state) -> do
+               solve s (n+1) state (plan ++ [actions])
         else do 
           putStrLn "*** Maximum number of actions reached"
-          -- fail
           return Nothing
--- 
--- -- allSame :: [Bool] -> Maybe Bool
--- -- allSame [] = error "empty list passed to allSame"
--- -- allSame [x] = Just x
--- -- allSame (x:xs) = allEqual x xs
--- --   where
--- --     allEqual :: Bool -> [Bool] -> Maybe Bool
--- --     allEqual a [] = Just a
--- --     allEqual a (x:xs) = if a == x then allEqual a xs else Nothing
--- -- 
--- -- isConstBool x = x == true || x == false
