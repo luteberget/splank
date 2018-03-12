@@ -35,7 +35,8 @@ action TakeBananas(L)
   to   HaveBananas
 ```
 
-	Output:
+Output:
+
 ```prolog
 --> Adding action 0
     (2 choices)
